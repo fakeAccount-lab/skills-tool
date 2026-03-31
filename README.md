@@ -54,7 +54,9 @@ skill-installer --help
 
 #### Windows
 
-##### 方法 A：添加到 PATH（推荐）
+**重要说明**：Windows 系统上，必须使用批处理文件或确保工作目录正确。直接将 `bin` 目录添加到 PATH 可能无法正常工作。
+
+##### 方法 A：使用批处理文件（推荐）
 
 ```powershell
 # 克隆仓库
@@ -64,12 +66,14 @@ cd skill-installer
 # 安装依赖并构建
 npm install && npm run build
 
-# 查看当前目录的完整路径
-pwd
+# 项目根目录已经有一个 skill-installer.bat 文件
+# 将该文件复制到 PATH 中的任意目录，例如：
+# C:\Users\YourName\AppData\Local\Microsoft\WindowsApps
 
-# 将以下路径添加到系统 PATH 环境变量：
-# <当前目录>\bin
-# 例如：C:\Users\YourName\skill-installer\bin
+# 或者，创建一个新的目录并添加到 PATH：
+# 1. 创建目录：C:\Users\YourName\bin
+# 2. 复制文件：copy skill-installer.bat C:\Users\YourName\bin\
+# 3. 将 C:\Users\YourName\bin 添加到 PATH 环境变量
 
 # 添加 PATH 后，重启终端，然后可以直接使用
 skill-installer --help
@@ -80,38 +84,12 @@ skill-installer --help
 1. 右键点击"此电脑" → "属性"
 2. 点击"高级系统设置"
 3. 点击"环境变量"
-4. 在"系统变量"中找到 `Path`，点击"编辑"
-5. 点击"新建"，添加 `C:\Users\YourName\skill-installer\bin`（替换为你的实际路径）
+4. 在"用户变量"或"系统变量"中找到 `Path`，点击"编辑"
+5. 点击"新建"，添加 `C:\Users\YourName\skill-installer`（替换为你的实际项目路径）
 6. 点击"确定"保存
 7. **重启终端**或**重新登录**以使更改生效
 
-##### 方法 B：创建批处理文件（备用）
-
-```powershell
-# 克隆仓库
-git clone https://github.com/fakeAccount-lab/skill-installer.git
-cd skill-installer
-
-# 安装依赖并构建
-npm install && npm run build
-
-# 创建批处理文件
-@echo off
-node "%~dp0dist\cli.js" %*
-```
-
-将上述内容保存为 `skill-installer.bat`，放到 PATH 中的任意目录（如 `C:\Windows` 或其他已添加到 PATH 的目录）。
-
-**具体步骤：**
-
-1. 在项目根目录创建 `skill-installer.bat` 文件
-2. 将该文件复制到 `C:\Users\YourName\AppData\Local\Microsoft\WindowsApps`（或者其他 PATH 中的目录）
-3. 在新的终端窗口中测试：
-   ```powershell
-   skill-installer --help
-   ```
-
-##### 方法 C：使用 PowerShell 别名
+##### 方法 B：使用 PowerShell 别名
 
 在 PowerShell 配置文件中添加别名：
 
@@ -120,19 +98,73 @@ node "%~dp0dist\cli.js" %*
 notepad $PROFILE
 
 # 添加以下行（替换为你的实际路径）
-function skill-installer { node C:\Users\YourName\skill-installer\dist\cli.js $args }
+function skill-installer { 
+  Set-Location C:\Users\YourName\skill-installer
+  node dist\cli.js $args
+  Set-Location $OLDPWD
+}
 
 # 保存文件并重启 PowerShell
+
+# 然后可以使用
+skill-installer --help
 ```
 
+**更简洁的版本**（不改变当前目录）：
+
+```powershell
+function skill-installer { 
+  node C:\Users\YourName\skill-installer\dist\cli.js $args
+}
+```
+
+##### 方法 C：使用 Git Bash（如果已安装）
+
+如果你使用 Git Bash，可以创建一个 bash 脚本：
+
+```bash
+# 在 Git Bash 中运行
+cd skill-installer
+cat > /usr/local/bin/skill-installer << 'EOF'
+#!/bin/bash
+cd /c/Users/YourName/skill-installer
+node dist/cli.js "$@"
+EOF
+
+chmod +x /usr/local/bin/skill-installer
+
+# 然后可以直接使用
+skill-installer --help
+```
+
+**注意**：Git Bash 使用 `/c/Users/` 格式表示 Windows 路径。
+
 ## 使用方法
+
+### 重要提示
+
+**默认使用方式**：所有示例命令都假设你在项目根目录下运行。
+
+如果你已经在项目根目录（包含 `dist/`、`bin/` 等目录的目录），使用：
+
+```bash
+node dist/cli.js <command>
+```
+
+如果你已经配置了全局命令（见下文"创建全局命令"），则可以直接使用：
+
+```bash
+skill-installer <command>
+```
 
 ### 查看帮助
 
 ```bash
+# 在项目根目录下运行
 node dist/cli.js help
-# 或
-node dist/cli.js
+
+# 或（如果配置了全局命令）
+skill-installer help
 ```
 
 ### 列出仓库中的可用技能
