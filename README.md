@@ -296,6 +296,72 @@ description: 这个技能的作用和使用场景
 可选字段：
 - `metadata.internal: true` - 标记为内部技能（默认隐藏）
 
+## 技能发现机制
+
+### 优先级
+
+工具按照以下优先级发现技能：
+
+1. **`.skills-hub/index.json`**（推荐，最高优先级）
+2. 标准目录扫描
+3. 递归搜索（兜底方案）
+
+### 方式 1：使用 `.skills-hub/index.json`（推荐）
+
+在仓库中创建 `.skills-hub/index.json` 配置文件，显式声明技能信息：
+
+```json
+{
+  "version": "1.0",
+  "skills": [
+    {
+      "name": "weather",
+      "description": "Get current weather and forecasts",
+      "path": "skills/weather"
+    },
+    {
+      "name": "git-helper",
+      "description": "Common Git operations",
+      "path": "tools/git-helper"
+    }
+  ]
+}
+```
+
+**优点**：
+- 稳定可靠，不依赖目录结构
+- 技能可以放在任意位置
+- 无需遍历整个目录树
+- 开发者完全控制技能列表
+
+**详细文档**：参见 [SKILL_HUB_CONFIG.md](SKILL_HUB_CONFIG.md)
+
+### 方式 2：标准目录扫描
+
+如果不存在配置文件，工具会扫描以下标准目录（按优先级排序）：
+
+- 根目录 (`/`)
+- `skills/`
+- `skills/.curated/`
+- `skills/.experimental/`
+- `skills/.system/`
+- `.agents/skills/`
+- `.agent/skills/`
+- `.claude/skills/`
+- `.codex/skills/`
+- `.cursor/skills/`
+- 其他标准目录...
+
+### 方式 3：递归搜索（兜底方案）
+
+如果标准目录中没有找到技能，工具会：
+
+- 从仓库根目录开始递归遍历
+- 查找所有包含 `SKILL.md` 的目录
+- 最多搜索 5 层深度
+- 跳过：`.git`、`node_modules`、`dist` 等目录
+- 跳过隐藏文件和目录
+
 ## Skill 发现机制
 
 工具会按以下顺序查找技能：

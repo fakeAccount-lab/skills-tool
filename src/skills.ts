@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'fs/promises';
 import { join, basename, relative, resolve } from 'path';
 import { existsSync } from 'fs';
 import matter from 'gray-matter';
-import type { Skill, SkillMetadata } from './types.js';
+import type { Skill, SkillMetadata, SkillHubIndex } from './types.js';
 
 const STANDARD_SKILL_DIRS = [
   '',
@@ -141,9 +141,101 @@ async function searchSkillsRecursive(
 }
 
 /**
+ * Discover skills from .skills-hub/index.json configuration file
+ */
+async function discoverSkillsFromIndex(
+  repoDir: string,
+  repositoryUrl: string
+): Promise<Skill[]> {
+  const indexPath = join(repoDir, '.skills-hub', 'index.json');
+
+  // Check if index file exists
+  if (!existsSync(indexPath)) {
+    return [];
+  }
+
+  try {
+    const content = await readFile(indexPath, 'utf-8');
+    const index: SkillHubIndex = JSON.parse(content);
+
+    // Validate index structure
+    if (!index.skills || !Array.isArray(index.skills)) {
+      console.warn('Invalid .skills-hub/index.json: missing or invalid skills array');
+      return [];
+    }
+
+    const skills: Skill[] = [];
+
+    for (const entry of index.skills) {
+      // Validate entry structure
+      if (!entry.name || !entry.description || !entry.path) {
+        console.warn(`Invalid skill entry in .skills-hub/index.json: ${JSON.stringify(entry)}`);
+        continue;
+      }
+
+      const skillPath = join(repoDir, entry.path);
+
+      // Check if the path exists and has a SKILL.md
+      if (!existsSync(skillPath)) {
+        console.warn(`Skill path does not exist: ${entry.path}`);
+        continue;
+      }
+
+      try {
+        const statResult = await stat(skillPath);
+        if (!statResult.isDirectory()) {
+          console.warn(`Skill path is not a directory: ${entry.path}`);
+          continue;
+        }
+      } catch {
+        console.warn(`Cannot access skill path: ${entry.path}`);
+        continue;
+      }
+
+      // Try to read SKILL.md for additional metadata
+      let internal = false;
+      const skillMdPath = join(skillPath, 'SKILL.md');
+      if (existsSync(skillMdPath)) {
+        try {
+          const content = await readFile(skillMdPath, 'utf-8');
+          const metadata = parseSkillMd(content);
+          if (metadata && metadata.internal !== undefined) {
+            internal = metadata.internal;
+          }
+        } catch {
+          // Ignore errors, use defaults
+        }
+      }
+
+      skills.push({
+        name: entry.name,
+        description: entry.description,
+        path: skillPath,
+        internal,
+        repository: repositoryUrl,
+      });
+    }
+
+    return skills;
+  } catch (error) {
+    console.warn('Failed to parse .skills-hub/index.json:', error instanceof Error ? error.message : String(error));
+    return [];
+  }
+}
+
+/**
  * Discover skills in a repository
  */
 export async function discoverSkills(repoDir: string, repositoryUrl: string): Promise<Skill[]> {
+  // First, try to discover from .skills-hub/index.json
+  const skillsFromIndex = await discoverSkillsFromIndex(repoDir, repositoryUrl);
+
+  if (skillsFromIndex.length > 0) {
+    console.log(`Found ${skillsFromIndex.length} skill(s) from .skills-hub/index.json`);
+    return skillsFromIndex;
+  }
+
+  // Fallback to original discovery mechanism
   const allSkills: Skill[] = [];
 
   // First, search in standard directories

@@ -37,3 +37,14 @@ export interface Config {
   defaultInstallMode?: InstallMode;
   defaultAgent?: string;
 }
+
+export interface SkillHubIndex {
+  version: string;
+  skills: SkillHubEntry[];
+}
+
+export interface SkillHubEntry {
+  name: string;
+  description: string;
+  path: string;
+}
