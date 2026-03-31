@@ -24,6 +24,7 @@ function printUsage(): void {
   console.log('  skill-installer list <repository>');
   console.log('  skill-installer installed --agent <agent>');
   console.log('  skill-installer remove <skill-name> --agent <agent> [options]');
+  console.log('  skill-installer agents');
   console.log('  skill-installer help');
   console.log('');
   console.log('Commands:');
@@ -31,6 +32,7 @@ function printUsage(): void {
   console.log('  list <repo>      List available skills in a repository');
   console.log('  installed        List installed skills for an agent');
   console.log('  remove <skill>   Remove an installed skill');
+  console.log('  agents           List all supported agents');
   console.log('  help             Show this help message');
   console.log('');
   console.log('Options:');
@@ -47,6 +49,7 @@ function printUsage(): void {
   console.log('  skill-installer list fakeAccount-lab/skills-hub');
   console.log('  skill-installer remove weather --agent openclaw');
   console.log('  skill-installer remove weather --agent openclaw --global');
+  console.log('  skill-installer agents');
 }
 
 async function cmdAdd(args: any): Promise<void> {
@@ -271,6 +274,7 @@ async function cmdInstalled(args: any): Promise<void> {
     console.error(chalk.red('Error: --agent is required'));
     console.log('');
     console.log('Usage: skill-installer installed --agent <agent> [--global]');
+    console.log('Use "skill-installer agents" to see all available agents');
     process.exit(1);
   }
 
@@ -279,6 +283,8 @@ async function cmdInstalled(args: any): Promise<void> {
 
   if (!agent) {
     console.error(chalk.red(`Error: Agent "${agentName}" not found`));
+    console.log('');
+    console.log('Use "skill-installer agents" to see all available agents');
     process.exit(1);
   }
 
@@ -291,12 +297,15 @@ async function cmdInstalled(args: any): Promise<void> {
   if (skills.length === 0) {
     console.log(chalk.yellow(`No skills installed for ${agent.displayName}`));
     console.log('');
+    console.log(chalk.gray(`Agent: ${agent.name}`));
     console.log(chalk.gray(`Path: ${isGlobal && agent.globalSkillsDir ? agent.globalSkillsDir : agent.skillsDir}`));
+    console.log('');
+    console.log(chalk.gray(`Use "skill-installer add <repo> --agent ${agentName}" to install skills`));
     return;
   }
 
   console.log('');
-  console.log(chalk.bold(`Agent: ${agent.displayName}`));
+  console.log(chalk.bold(`Agent: ${agent.displayName} (${agent.name})`));
   console.log(chalk.gray(`Path: ${isGlobal && agent.globalSkillsDir ? agent.globalSkillsDir : agent.skillsDir}`));
   console.log('');
   console.log(chalk.bold(`Found ${skills.length} skill(s):`));
@@ -305,8 +314,12 @@ async function cmdInstalled(args: any): Promise<void> {
   for (const skill of skills) {
     console.log(chalk.cyan(`• ${skill.name}`));
     console.log(chalk.gray(`  ${skill.description}`));
+    console.log(chalk.gray(`  Path: ${skill.path}`));
     if (skill.internal) {
-      console.log(chalk.gray(`  (internal skill)`));
+      console.log(chalk.gray(`  Type: internal`));
+    }
+    if (skill.repository) {
+      console.log(chalk.gray(`  Source: ${skill.repository}`));
     }
     console.log('');
   }
@@ -319,6 +332,7 @@ async function cmdRemove(args: any): Promise<void> {
     console.error(chalk.red('Error: Skill name is required'));
     console.log('');
     console.log('Usage: skill-installer remove <skill-name> --agent <agent> [--global]');
+    console.log('Use "skill-installer installed --agent <agent>" to see installed skills');
     process.exit(1);
   }
 
@@ -328,6 +342,7 @@ async function cmdRemove(args: any): Promise<void> {
     console.error(chalk.red('Error: --agent is required'));
     console.log('');
     console.log('Usage: skill-installer remove <skill-name> --agent <agent> [--global]');
+    console.log('Use "skill-installer agents" to see all available agents');
     process.exit(1);
   }
 
@@ -336,6 +351,8 @@ async function cmdRemove(args: any): Promise<void> {
 
   if (!agent) {
     console.error(chalk.red(`Error: Agent "${agentName}" not found`));
+    console.log('');
+    console.log('Use "skill-installer agents" to see all available agents');
     process.exit(1);
   }
 
@@ -348,6 +365,8 @@ async function cmdRemove(args: any): Promise<void> {
 
   if (!isInstalled) {
     console.log(chalk.yellow(`Skill "${skillName}" is not installed for ${agent.displayName}`));
+    console.log('');
+    console.log(chalk.gray(`Use "skill-installer installed --agent ${agentName}" to see installed skills`));
     return;
   }
 
@@ -373,6 +392,47 @@ async function cmdRemove(args: any): Promise<void> {
   }
 
   outro(chalk.cyan('✨ Done!'));
+}
+
+async function cmdAgents(): Promise<void> {
+  intro(chalk.cyan('🤖 Supported Agents'));
+
+  const agents = getAgents();
+  const agentEntries = Object.entries(agents);
+
+  if (agentEntries.length === 0) {
+    console.log(chalk.yellow('No agents configured'));
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold(`Found ${agentEntries.length} agent(s):`));
+  console.log('');
+
+  for (const [name, agent] of agentEntries) {
+    console.log(chalk.cyan(`• ${agent.displayName}`));
+    console.log(chalk.gray(`  Name: ${name}`));
+    console.log(chalk.gray(`  Skills Directory: ${agent.skillsDir}`));
+    if (agent.globalSkillsDir) {
+      console.log(chalk.gray(`  Global Skills Directory: ${agent.globalSkillsDir}`));
+    } else {
+      console.log(chalk.gray(`  Global Skills Directory: not supported`));
+    }
+
+    // Check if agent is installed
+    if (agent.detectInstalled) {
+      const isInstalled = await agent.detectInstalled();
+      if (isInstalled) {
+        console.log(chalk.green(`  Status: ✓ installed`));
+      } else {
+        console.log(chalk.gray(`  Status: not detected`));
+      }
+    }
+
+    console.log('');
+  }
+
+  outro(chalk.cyan(`✨ Listed ${agentEntries.length} agent(s)`));
 }
 
 async function main(): Promise<void> {
@@ -417,6 +477,9 @@ async function main(): Promise<void> {
       break;
     case 'remove':
       await cmdRemove({ ...values, _: positionals.slice(1) });
+      break;
+    case 'agents':
+      await cmdAgents();
       break;
     case 'help':
     case undefined:

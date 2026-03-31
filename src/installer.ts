@@ -414,9 +414,10 @@ export async function listInstalledSkills(
     for (const entry of entries) {
       // Check if it's a directory or a symlink pointing to a directory
       let isDirectory = entry.isDirectory();
+      let isSymlink = entry.isSymbolicLink();
       let entryPath = join(targetBase, entry.name);
 
-      if (!isDirectory && entry.isSymbolicLink()) {
+      if (!isDirectory && isSymlink) {
         try {
           const stats = await stat(entryPath);
           isDirectory = stats.isDirectory();
@@ -438,11 +439,25 @@ export async function listInstalledSkills(
         const { data } = matter(content);
 
         if (data.name && data.description) {
+          // Try to find repository information
+          let repository: string | undefined;
+          try {
+            const gitConfigPath = join(skillPath, '.git', 'config');
+            const gitConfig = await readFile(gitConfigPath, 'utf-8');
+            const match = gitConfig.match(/url\s*=\s*(.+)/);
+            if (match) {
+              repository = match[1].trim();
+            }
+          } catch {
+            // Not a git repository or git config not found
+          }
+
           skills.push({
             name: String(data.name),
             description: String(data.description),
             path: skillPath,
             internal: data.metadata?.internal === true || data.internal === true,
+            repository,
           });
         }
       } catch {
