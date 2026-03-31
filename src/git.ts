@@ -48,21 +48,32 @@ export async function cloneRepo(url: string, ref?: string): Promise<string> {
   // Set environment variable for git
   process.env.GIT_TERMINAL_PROMPT = '0';
   
-  const git = simpleGit({
-    baseDir: tempDir,
-    timeout: {
-      block: CLONE_TIMEOUT_MS
-    }
-  });
+  const git = simpleGit();
 
   const { url: normalizedUrl, ref: resolvedRef } = normalizeGitUrl(url, ref);
   
   const cloneOptions = resolvedRef 
-    ? ['--depth', '1', '--branch', resolvedRef] 
+    ? ['--depth', '1', '--branch', resolvedRef, '--single-branch'] 
     : ['--depth', '1'];
 
   try {
-    await git.clone(normalizedUrl, '.', cloneOptions);
+    // Use promises API for better timeout handling
+    await new Promise<void>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`Clone timed out after ${CLONE_TIMEOUT_MS}ms`));
+      }, CLONE_TIMEOUT_MS);
+
+      git.clone(normalizedUrl, tempDir, cloneOptions)
+        .then(() => {
+          clearTimeout(timeoutId);
+          resolve();
+        })
+        .catch((error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        });
+    });
+    
     return tempDir;
   } catch (error) {
     // Clean up temp dir on failure
