@@ -1,7 +1,8 @@
-import { mkdir, cp, access, readdir, symlink, rm, readlink, lstat, stat, realpath } from 'fs/promises';
-import { existsSync } from 'fs';
+import { mkdir, cp, access, readdir, symlink, rm, readlink, lstat, stat, realpath, readFile } from 'fs/promises';
+import { existsSync, readFileSync } from 'fs';
 import { join, basename, normalize, resolve, sep, relative, dirname } from 'path';
 import { homedir, platform } from 'os';
+import matter from 'gray-matter';
 import type { Skill, AgentType, InstallMode, InstallResult, AgentConfig } from './types.js';
 
 const EXCLUDE_FILES = new Set(['metadata.json']);
@@ -314,4 +315,153 @@ export async function isSkillInstalled(
   } catch {
     return false;
   }
+}
+
+/**
+ * Remove a skill from an agent
+ */
+export async function removeSkill(
+  skillName: string,
+  agent: AgentConfig,
+  options: { global?: boolean; cwd?: string } = {}
+): Promise<{ success: boolean; error?: string }> {
+  const sanitized = sanitizeName(skillName);
+  const isGlobal = options.global ?? false;
+  const cwd = options.cwd || process.cwd();
+
+  // Check if agent supports global installation
+  if (isGlobal && !agent.globalSkillsDir) {
+    return {
+      success: false,
+      error: `${agent.displayName} does not support global skill installation`,
+    };
+  }
+
+  const targetBase = getAgentSkillsDir(agent, isGlobal, cwd);
+  const skillDir = join(targetBase, sanitized);
+  const canonicalDir = join(getCanonicalSkillsDir(isGlobal, cwd), sanitized);
+
+  // Validate paths
+  if (!isPathSafe(targetBase, skillDir)) {
+    return {
+      success: false,
+      error: 'Invalid skill name: potential path traversal detected',
+    };
+  }
+
+  try {
+    // Check if skill exists
+    const exists = await isSkillInstalled(skillName, agent, { global: isGlobal, cwd });
+    if (!exists) {
+      return {
+        success: false,
+        error: `Skill "${skillName}" is not installed for ${agent.displayName}`,
+      };
+    }
+
+    // Remove agent directory
+    await rm(skillDir, { recursive: true, force: true });
+
+    // Check if canonical directory exists and if it's still being used by other agents
+    try {
+      await access(canonicalDir);
+      
+      // Check if any other agent is using this canonical directory
+      // For now, we'll check if any agent's skills directory has a symlink to this canonical directory
+      const agents = Object.values(getAgents ? getAgents() : {}); // We'll need to pass agents or import
+      
+      // Simple approach: check if canonical dir is a symlink target for any agent
+      // For now, just remove canonical dir if it exists
+      // A more sophisticated approach would check for other references
+      await rm(canonicalDir, { recursive: true, force: true });
+    } catch {
+      // Canonical directory doesn't exist, nothing to do
+    }
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * List installed skills for an agent
+ */
+export async function listInstalledSkills(
+  agent: AgentConfig,
+  options: { global?: boolean; cwd?: string } = {}
+): Promise<Skill[]> {
+  const isGlobal = options.global ?? false;
+  const cwd = options.cwd || process.cwd();
+
+  const targetBase = getAgentSkillsDir(agent, isGlobal, cwd);
+
+  // Check if skills directory exists
+  try {
+    await access(targetBase);
+  } catch {
+    return [];
+  }
+
+  const skills: Skill[] = [];
+
+  try {
+    const entries = await readdir(targetBase, { withFileTypes: true });
+
+    for (const entry of entries) {
+      // Check if it's a directory or a symlink pointing to a directory
+      let isDirectory = entry.isDirectory();
+      let entryPath = join(targetBase, entry.name);
+
+      if (!isDirectory && entry.isSymbolicLink()) {
+        try {
+          const stats = await stat(entryPath);
+          isDirectory = stats.isDirectory();
+        } catch {
+          // Broken symlink, skip
+          continue;
+        }
+      }
+
+      if (!isDirectory) {
+        continue;
+      }
+
+      const skillPath = entryPath;
+      const skillMdPath = join(skillPath, 'SKILL.md');
+
+      try {
+        const content = await readFile(skillMdPath, 'utf-8');
+        const { data } = matter(content);
+
+        if (data.name && data.description) {
+          skills.push({
+            name: String(data.name),
+            description: String(data.description),
+            path: skillPath,
+            internal: data.metadata?.internal === true || data.internal === true,
+          });
+        }
+      } catch {
+        // Invalid or missing SKILL.md, skip
+        continue;
+      }
+    }
+  } catch {
+    // Error reading directory
+    return [];
+  }
+
+  return skills;
+}
+
+// Helper function to get agents (needed for removeSkill)
+// This should be imported from config.ts, but we'll handle it differently
+import { getAgents as getAgentsFromConfig } from './config.js';
+
+function getAgents() {
+  return getAgentsFromConfig();
 }

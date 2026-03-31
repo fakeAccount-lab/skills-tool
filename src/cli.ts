@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { intro, outro, text, cancel, isCancel, note } from '@clack/prompts';
+import { intro, outro, text, cancel, isCancel, note, confirm } from '@clack/prompts';
 import chalk from 'chalk';
 import { parseArgs } from 'node:util';
 import { cloneRepo, cleanupTempDir, normalizeGitUrl, GitCloneError } from './git.js';
 import { discoverSkills, findSkillByName } from './skills.js';
 import { getAgents, getAgent, getDefaultInstallMode, getDefaultAgent } from './config.js';
-import { installSkill, isSkillInstalled } from './installer.js';
+import { installSkill, isSkillInstalled, removeSkill, listInstalledSkills } from './installer.js';
 import {
   selectAgentPrompt,
   selectSkillPrompt,
@@ -23,11 +23,14 @@ function printUsage(): void {
   console.log('  skill-installer add <repository> [options]');
   console.log('  skill-installer list <repository>');
   console.log('  skill-installer installed --agent <agent>');
+  console.log('  skill-installer remove <skill-name> --agent <agent> [options]');
+  console.log('  skill-installer help');
   console.log('');
   console.log('Commands:');
   console.log('  add <repo>       Install skills from a Git repository');
   console.log('  list <repo>      List available skills in a repository');
-  console.log('  installed        List installed skills');
+  console.log('  installed        List installed skills for an agent');
+  console.log('  remove <skill>   Remove an installed skill');
   console.log('  help             Show this help message');
   console.log('');
   console.log('Options:');
@@ -42,6 +45,8 @@ function printUsage(): void {
   console.log('  skill-installer add fakeAccount-lab/skills-hub --agent openclaw');
   console.log('  skill-installer add git@github.com:owner/repo.git --agent claude-code --global');
   console.log('  skill-installer list fakeAccount-lab/skills-hub');
+  console.log('  skill-installer remove weather --agent openclaw');
+  console.log('  skill-installer remove weather --agent openclaw --global');
 }
 
 async function cmdAdd(args: any): Promise<void> {
@@ -264,6 +269,8 @@ async function cmdList(args: any): Promise<void> {
 async function cmdInstalled(args: any): Promise<void> {
   if (!args.agent) {
     console.error(chalk.red('Error: --agent is required'));
+    console.log('');
+    console.log('Usage: skill-installer installed --agent <agent> [--global]');
     process.exit(1);
   }
 
@@ -277,14 +284,95 @@ async function cmdInstalled(args: any): Promise<void> {
 
   const isGlobal = args.global || false;
 
-  // This is a simplified implementation
-  // In a full implementation, we would scan the agent's skills directory
-  // and parse SKILL.md files to list installed skills
-  
-  console.log(chalk.yellow('Note: Listing installed skills is not yet implemented'));
+  intro(chalk.cyan('📋 Installed Skills'));
+
+  const skills = await listInstalledSkills(agent, { global: isGlobal });
+
+  if (skills.length === 0) {
+    console.log(chalk.yellow(`No skills installed for ${agent.displayName}`));
+    console.log('');
+    console.log(chalk.gray(`Path: ${isGlobal && agent.globalSkillsDir ? agent.globalSkillsDir : agent.skillsDir}`));
+    return;
+  }
+
   console.log('');
-  console.log(`Agent: ${agent.displayName}`);
-  console.log(`Path: ${isGlobal && agent.globalSkillsDir ? agent.globalSkillsDir : agent.skillsDir}`);
+  console.log(chalk.bold(`Agent: ${agent.displayName}`));
+  console.log(chalk.gray(`Path: ${isGlobal && agent.globalSkillsDir ? agent.globalSkillsDir : agent.skillsDir}`));
+  console.log('');
+  console.log(chalk.bold(`Found ${skills.length} skill(s):`));
+  console.log('');
+
+  for (const skill of skills) {
+    console.log(chalk.cyan(`• ${skill.name}`));
+    console.log(chalk.gray(`  ${skill.description}`));
+    if (skill.internal) {
+      console.log(chalk.gray(`  (internal skill)`));
+    }
+    console.log('');
+  }
+
+  outro(chalk.cyan(`✨ Listed ${skills.length} skill(s)`));
+}
+
+async function cmdRemove(args: any): Promise<void> {
+  if (!args._.length) {
+    console.error(chalk.red('Error: Skill name is required'));
+    console.log('');
+    console.log('Usage: skill-installer remove <skill-name> --agent <agent> [--global]');
+    process.exit(1);
+  }
+
+  const skillName = args._[0] as string;
+
+  if (!args.agent) {
+    console.error(chalk.red('Error: --agent is required'));
+    console.log('');
+    console.log('Usage: skill-installer remove <skill-name> --agent <agent> [--global]');
+    process.exit(1);
+  }
+
+  const agentName = args.agent;
+  const agent = getAgent(agentName);
+
+  if (!agent) {
+    console.error(chalk.red(`Error: Agent "${agentName}" not found`));
+    process.exit(1);
+  }
+
+  const isGlobal = args.global || false;
+
+  intro(chalk.cyan('🗑️  Removing Skill'));
+
+  // Check if skill is installed
+  const isInstalled = await isSkillInstalled(skillName, agent, { global: isGlobal });
+
+  if (!isInstalled) {
+    console.log(chalk.yellow(`Skill "${skillName}" is not installed for ${agent.displayName}`));
+    return;
+  }
+
+  // Confirm removal
+  if (!args.yes) {
+    const confirmed = await confirm({
+      message: `Remove skill "${skillName}" from ${agent.displayName}?`,
+    });
+
+    if (isCancel(confirmed) || !confirmed) {
+      console.log(chalk.gray('Removal cancelled'));
+      return;
+    }
+  }
+
+  // Remove skill
+  const result = await removeSkill(skillName, agent, { global: isGlobal });
+
+  if (result.success) {
+    console.log(chalk.green(`✓ Removed "${skillName}" from ${agent.displayName}`));
+  } else {
+    console.log(chalk.red(`✗ Failed to remove "${skillName}": ${result.error}`));
+  }
+
+  outro(chalk.cyan('✨ Done!'));
 }
 
 async function main(): Promise<void> {
@@ -326,6 +414,9 @@ async function main(): Promise<void> {
       break;
     case 'installed':
       await cmdInstalled(values);
+      break;
+    case 'remove':
+      await cmdRemove({ ...values, _: positionals.slice(1) });
       break;
     case 'help':
     case undefined:
