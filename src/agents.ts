@@ -1,0 +1,85 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { xdgConfig } from 'xdg-basedir';
+import type { AgentConfig } from './types.js';
+
+const home = homedir();
+const configHome = xdgConfig || join(home, '.config');
+
+export const DEFAULT_AGENTS: Record<string, AgentConfig> = {
+  openclaw: {
+    name: 'openclaw',
+    displayName: 'OpenClaw',
+    skillsDir: 'skills',
+    globalSkillsDir: getOpenClawGlobalSkillsDir(),
+    detectInstalled: async () => {
+      return existsSync(join(home, '.openclaw')) || 
+             existsSync(join(home, '.clawdbot'));
+    }
+  },
+  'claude-code': {
+    name: 'claude-code',
+    displayName: 'Claude Code',
+    skillsDir: '.claude/skills',
+    globalSkillsDir: join(process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, '.claude'), 'skills'),
+    detectInstalled: async () => {
+      return existsSync(process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, '.claude'));
+    }
+  },
+  codex: {
+    name: 'codex',
+    displayName: 'Codex',
+    skillsDir: '.codex/skills',
+    globalSkillsDir: join(process.env.CODEX_HOME?.trim() || join(home, '.codex'), 'skills'),
+    detectInstalled: async () => {
+      return existsSync(process.env.CODEX_HOME?.trim() || join(home, '.codex'));
+    }
+  },
+  cursor: {
+    name: 'cursor',
+    displayName: 'Cursor',
+    skillsDir: '.cursor/skills',
+    globalSkillsDir: join(home, '.cursor/skills'),
+    detectInstalled: async () => {
+      return existsSync(join(home, '.cursor'));
+    }
+  },
+  opencode: {
+    name: 'opencode',
+    displayName: 'OpenCode',
+    skillsDir: '.agents/skills',
+    globalSkillsDir: join(configHome, 'opencode/skills'),
+    detectInstalled: async () => {
+      return existsSync(join(configHome, 'opencode'));
+    }
+  },
+  universal: {
+    name: 'universal',
+    displayName: 'Universal',
+    skillsDir: '.agents/skills',
+    globalSkillsDir: join(configHome, 'agents/skills'),
+    detectInstalled: async () => false
+  }
+};
+
+function getOpenClawGlobalSkillsDir(): string {
+  if (existsSync(join(home, '.openclaw'))) {
+    return join(home, '.openclaw/skills');
+  }
+  if (existsSync(join(home, '.clawdbot'))) {
+    return join(home, '.clawdbot/skills');
+  }
+  return join(home, '.openclaw/skills');
+}
+
+export async function detectInstalledAgents(): Promise<string[]> {
+  const results: { type: string; installed: boolean }[] = [];
+  
+  for (const [type, config] of Object.entries(DEFAULT_AGENTS)) {
+    const installed = config.detectInstalled ? await config.detectInstalled() : false;
+    results.push({ type, installed });
+  }
+  
+  return results.filter(r => r.installed).map(r => r.type);
+}

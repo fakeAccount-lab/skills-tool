@@ -1,0 +1,317 @@
+import { mkdir, cp, access, readdir, symlink, rm, readlink, lstat, stat, realpath } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join, basename, normalize, resolve, sep, relative, dirname } from 'path';
+import { homedir, platform } from 'os';
+import type { Skill, AgentType, InstallMode, InstallResult, AgentConfig } from './types.js';
+
+const EXCLUDE_FILES = new Set(['metadata.json']);
+const EXCLUDE_DIRS = new Set(['.git', '__pycache__', '__pypackages__', 'node_modules', 'dist']);
+
+function isExcluded(name: string, isDirectory: boolean = false): boolean {
+  if (EXCLUDE_FILES.has(name)) return true;
+  if (name.startsWith('.')) return true;
+  if (isDirectory && EXCLUDE_DIRS.has(name)) return true;
+  return false;
+}
+
+/**
+ * Sanitize a filename to prevent path traversal attacks
+ */
+export function sanitizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9._]+/g, '-')
+    .replace(/^[.\-]+|[.\-]+$/g, '')
+    .substring(0, 255) || 'unnamed-skill';
+}
+
+/**
+ * Validate that a path is within an expected base directory
+ */
+function isPathSafe(basePath: string, targetPath: string): boolean {
+  const normalizedBase = normalize(resolve(basePath));
+  const normalizedTarget = normalize(resolve(targetPath));
+  return normalizedTarget.startsWith(normalizedBase + sep) || normalizedTarget === normalizedBase;
+}
+
+/**
+ * Get canonical skills directory
+ */
+function getCanonicalSkillsDir(global: boolean, cwd?: string): string {
+  const baseDir = global ? homedir() : cwd || process.cwd();
+  return join(baseDir, '.agents', 'skills');
+}
+
+/**
+ * Get agent's skills directory
+ */
+function getAgentSkillsDir(agent: AgentConfig, global: boolean, cwd?: string): string {
+  const baseDir = global ? homedir() : cwd || process.cwd();
+  
+  if (global && agent.globalSkillsDir) {
+    return agent.globalSkillsDir;
+  }
+  
+  return join(baseDir, agent.skillsDir);
+}
+
+/**
+ * Resolve a path's parent directory through symlinks
+ */
+async function resolveParentSymlinks(path: string): Promise<string> {
+  const resolved = resolve(path);
+  const dir = dirname(resolved);
+  const base = basename(resolved);
+  
+  try {
+    const realDir = await realpath(dir);
+    return join(realDir, base);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * Clean and recreate a directory
+ */
+async function cleanAndCreateDirectory(path: string): Promise<void> {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup errors
+  }
+  await mkdir(path, { recursive: true });
+}
+
+/**
+ * Create a symlink, handling cross-platform differences
+ */
+async function createSymlink(target: string, linkPath: string): Promise<boolean> {
+  try {
+    const resolvedTarget = resolve(target);
+    const resolvedLinkPath = resolve(linkPath);
+
+    const [realTarget, realLinkPath] = await Promise.all([
+      realpath(resolvedTarget).catch(() => resolvedTarget),
+      realpath(resolvedLinkPath).catch(() => resolvedLinkPath),
+    ]);
+
+    if (realTarget === realLinkPath) {
+      return true;
+    }
+
+    const realTargetWithParents = await resolveParentSymlinks(target);
+    const realLinkPathWithParents = await resolveParentSymlinks(linkPath);
+
+    if (realTargetWithParents === realLinkPathWithParents) {
+      return true;
+    }
+
+    try {
+      const stats = await lstat(linkPath);
+      if (stats.isSymbolicLink()) {
+        const existingTarget = await readlink(linkPath);
+        if (resolve(dirname(linkPath), existingTarget) === resolvedTarget) {
+          return true;
+        }
+        await rm(linkPath);
+      } else {
+        await rm(linkPath, { recursive: true });
+      }
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'code' in err && err.code === 'ELOOP') {
+        try {
+          await rm(linkPath, { force: true });
+        } catch {
+          // Continue
+        }
+      }
+    }
+
+    const linkDir = dirname(linkPath);
+    await mkdir(linkDir, { recursive: true });
+
+    const realLinkDir = await resolveParentSymlinks(linkDir);
+    const relativePath = relative(realLinkDir, target);
+    const symlinkType = platform() === 'win32' ? 'junction' : undefined;
+
+    await symlink(relativePath, linkPath, symlinkType);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy directory recursively
+ */
+async function copyDirectory(src: string, dest: string): Promise<void> {
+  await mkdir(dest, { recursive: true });
+  const entries = await readdir(src, { withFileTypes: true });
+
+  await Promise.all(
+    entries
+      .filter((entry) => !isExcluded(entry.name, entry.isDirectory()))
+      .map(async (entry) => {
+        const srcPath = join(src, entry.name);
+        const destPath = join(dest, entry.name);
+
+        if (entry.isDirectory()) {
+          await copyDirectory(srcPath, destPath);
+        } else {
+          try {
+            await cp(srcPath, destPath, {
+              dereference: true,
+              recursive: true,
+            });
+          } catch (err: unknown) {
+            if (err instanceof Error && 'code' in err && err.code === 'ENOENT' && entry.isSymbolicLink()) {
+              console.warn(`Skipping broken symlink: ${srcPath}`);
+            } else {
+              throw err;
+            }
+          }
+        }
+      })
+  );
+}
+
+/**
+ * Install a skill to an agent
+ */
+export async function installSkill(
+  skill: Skill,
+  agent: AgentConfig,
+  options: { global?: boolean; cwd?: string; mode?: InstallMode } = {}
+): Promise<InstallResult> {
+  const isGlobal = options.global ?? false;
+  const cwd = options.cwd || process.cwd();
+  const installMode = options.mode ?? 'symlink';
+
+  // Check if agent supports global installation
+  if (isGlobal && !agent.globalSkillsDir) {
+    return {
+      success: false,
+      path: '',
+      mode: installMode,
+      error: `${agent.displayName} does not support global skill installation`,
+    };
+  }
+
+  // Sanitize skill name
+  const skillName = sanitizeName(skill.name);
+
+  // Determine paths
+  const canonicalBase = getCanonicalSkillsDir(isGlobal, cwd);
+  const canonicalDir = join(canonicalBase, skillName);
+  const agentBase = getAgentSkillsDir(agent, isGlobal, cwd);
+  const agentDir = join(agentBase, skillName);
+
+  // Validate paths
+  if (!isPathSafe(canonicalBase, canonicalDir)) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: 'Invalid skill name: potential path traversal detected',
+    };
+  }
+
+  if (!isPathSafe(agentBase, agentDir)) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: 'Invalid skill name: potential path traversal detected',
+    };
+  }
+
+  try {
+    // Copy mode: copy directly to agent location
+    if (installMode === 'copy') {
+      await cleanAndCreateDirectory(agentDir);
+      await copyDirectory(skill.path, agentDir);
+      return {
+        success: true,
+        path: agentDir,
+        mode: 'copy',
+      };
+    }
+
+    // Symlink mode: copy to canonical location and symlink to agent location
+    await cleanAndCreateDirectory(canonicalDir);
+    await copyDirectory(skill.path, canonicalDir);
+
+    // Check if agent uses universal directory
+    const agentUsesUniversal = agent.skillsDir === '.agents/skills';
+    if (isGlobal && agentUsesUniversal) {
+      return {
+        success: true,
+        path: canonicalDir,
+        canonicalPath: canonicalDir,
+        mode: 'symlink',
+      };
+    }
+
+    // Create symlink
+    const symlinkCreated = await createSymlink(canonicalDir, agentDir);
+
+    if (!symlinkCreated) {
+      // Symlink failed, fall back to copy
+      await cleanAndCreateDirectory(agentDir);
+      await copyDirectory(skill.path, agentDir);
+      return {
+        success: true,
+        path: agentDir,
+        canonicalPath: canonicalDir,
+        mode: 'symlink',
+        symlinkFailed: true,
+      };
+    }
+
+    return {
+      success: true,
+      path: agentDir,
+      canonicalPath: canonicalDir,
+      mode: 'symlink',
+    };
+  } catch (error) {
+    return {
+      success: false,
+      path: agentDir,
+      mode: installMode,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Check if a skill is installed
+ */
+export async function isSkillInstalled(
+  skillName: string,
+  agent: AgentConfig,
+  options: { global?: boolean; cwd?: string } = {}
+): Promise<boolean> {
+  const sanitized = sanitizeName(skillName);
+
+  if (options.global && !agent.globalSkillsDir) {
+    return false;
+  }
+
+  const targetBase = options.global
+    ? agent.globalSkillsDir!
+    : join(options.cwd || process.cwd(), agent.skillsDir);
+  const skillDir = join(targetBase, sanitized);
+
+  if (!isPathSafe(targetBase, skillDir)) {
+    return false;
+  }
+
+  try {
+    await access(skillDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
